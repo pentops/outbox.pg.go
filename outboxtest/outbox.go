@@ -1,4 +1,4 @@
-package flowtest
+package outboxtest
 
 import (
 	"context"
