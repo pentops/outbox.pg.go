@@ -7,7 +7,7 @@ import (
 	sq "github.com/elgris/sqrl"
 	"github.com/google/uuid"
 	"google.golang.org/protobuf/proto"
-	"gopkg.daemonl.com/sqrlx"
+	"github.com/pentops/sqrlx.go/sqrlx"
 )
 
 type OutboxMessage interface {

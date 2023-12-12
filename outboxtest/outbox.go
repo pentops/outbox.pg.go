@@ -11,7 +11,7 @@ import (
 
 	sq "github.com/elgris/sqrl"
 	"google.golang.org/protobuf/proto"
-	"gopkg.daemonl.com/sqrlx"
+	"github.com/pentops/sqrlx.go/sqrlx"
 )
 
 type TB interface {
