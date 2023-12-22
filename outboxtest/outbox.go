@@ -10,8 +10,8 @@ import (
 	"testing"
 
 	sq "github.com/elgris/sqrl"
-	"google.golang.org/protobuf/proto"
 	"github.com/pentops/sqrlx.go/sqrlx"
+	"google.golang.org/protobuf/proto"
 )
 
 type TB interface {
@@ -61,6 +61,7 @@ func (oa *OutboxAsserter) PopMessage(tb TB, message OutboxMessage) {
 	destination := message.MessagingTopic()
 
 	if err := oa.db.Transact(context.Background(), nil, func(ctx context.Context, tx sqrlx.Transaction) error {
+		tb.Helper()
 		var msgID string
 		var msgHeader string
 		var msgContent []byte
@@ -100,10 +101,157 @@ func (oa *OutboxAsserter) PopMessage(tb TB, message OutboxMessage) {
 	}
 }
 
+type MessageMatch[M OutboxMessage] struct {
+	Message    M
+	conditions []func(M) bool
+}
+
+func NewMatcher[M OutboxMessage](message M, where ...func(M) bool) MessageMatch[M] {
+	return MessageMatch[M]{
+		Message:    message,
+		conditions: where,
+	}
+}
+
+func (m MessageMatch[M]) MessagingTopic() string {
+	return m.Message.MessagingTopic()
+}
+
+func (m MessageMatch[M]) Attempt(serviceName string, data []byte) (bool, error) {
+	if serviceName != m.Message.MessagingHeaders()["grpc-service"] {
+		return false, nil
+	}
+
+	if err := proto.Unmarshal(data, m.Message); err != nil {
+		return false, err
+	}
+
+	for _, condition := range m.conditions {
+		if !condition(m.Message) {
+			return false, nil
+		}
+	}
+
+	return true, nil
+}
+
+type Matcher interface {
+	MessagingTopic() string
+	Attempt(serviceName string, data []byte) (bool, error)
+}
+
+func (oa *OutboxAsserter) PopMatching(tb TB, matcher Matcher) {
+	tb.Helper()
+
+	destination := matcher.MessagingTopic()
+
+	if err := oa.db.Transact(context.Background(), nil, func(ctx context.Context, tx sqrlx.Transaction) error {
+		tb.Helper()
+		var msgID string
+		var msgHeader string
+		var msgContent []byte
+
+		rows, err := tx.Select(
+			ctx,
+			sq.Select(oa.IDColumn, oa.HeadersColumn, oa.DataColumn).
+				From(oa.TableName).
+				Where(sq.Eq{oa.DestinationColumn: destination}),
+		)
+		if err != nil {
+			return err
+		}
+
+		defer rows.Close()
+
+		var foundOne string
+		for rows.Next() {
+			err := rows.Scan(&msgID, &msgHeader, &msgContent)
+			if errors.Is(err, sql.ErrNoRows) {
+				return fmt.Errorf("assertion failed, no outbox messages on %s", destination)
+			} else if err != nil {
+				return err
+			}
+
+			storedHeaders, _ := url.ParseQuery(msgHeader)
+			storedServiceHeader := storedHeaders.Get(oa.ServiceNameHeader)
+			didHandle, err := matcher.Attempt(storedServiceHeader, msgContent)
+			if err != nil {
+				return err
+			}
+			if !didHandle {
+				continue
+			}
+
+			foundOne = msgID
+
+			break
+		}
+
+		for rows.Next() {
+		}
+
+		if foundOne == "" {
+			return fmt.Errorf("no messages matched for %s with custom matcher", destination)
+		}
+
+		if _, err := tx.Delete(ctx, sq.Delete(oa.TableName).
+			Where(sq.Eq{oa.IDColumn: foundOne}),
+		); err != nil {
+			return err
+		}
+
+		return nil
+
+	}); err != nil {
+		tb.Fatalf(err.Error())
+	}
+}
+
+func (oa *OutboxAsserter) ForEachMessage(tb TB, callback func(string, string, []byte)) {
+	tb.Helper()
+	type msgRow struct {
+		Destination string
+		Headers     string
+		Data        []byte
+	}
+
+	messageRows := []msgRow{}
+	if txErr := oa.db.Transact(context.Background(), nil, func(contextVal context.Context, tx sqrlx.Transaction) error {
+		tb.Helper()
+		dataRows, err := tx.Select(contextVal, sq.Select(
+			oa.DestinationColumn,
+			oa.HeadersColumn,
+			oa.DataColumn,
+		).From(oa.TableName))
+		if err != nil {
+			return err
+		}
+		defer dataRows.Close()
+		for dataRows.Next() {
+			msgRow := msgRow{}
+			if scanErr := dataRows.Scan(&msgRow.Destination, &msgRow.Headers, &msgRow.Data); scanErr != nil {
+				return scanErr
+			}
+			messageRows = append(messageRows, msgRow)
+
+		}
+		return nil
+	}); txErr != nil {
+		tb.Fatal(txErr.Error())
+	}
+
+	for _, msgRow := range messageRows {
+		storedHeaders, _ := url.ParseQuery(msgRow.Headers)
+		storedServiceHeader := storedHeaders.Get(oa.ServiceNameHeader)
+		callback(msgRow.Destination, storedServiceHeader, msgRow.Data)
+	}
+}
+
 func (oa *OutboxAsserter) AssertNoMessages(tb TB) {
 	tb.Helper()
 	msgCounts := []string{}
 	if txErr := oa.db.Transact(context.Background(), nil, func(contextVal context.Context, tx sqrlx.Transaction) error {
+		tb.Helper()
 		dataRows, err := tx.Select(contextVal, sq.Select(
 			oa.DestinationColumn,
 			"count(*)",
