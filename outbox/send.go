@@ -2,12 +2,13 @@ package outbox
 
 import (
 	"context"
+	"database/sql"
 	"net/url"
 
 	sq "github.com/elgris/sqrl"
 	"github.com/google/uuid"
-	"google.golang.org/protobuf/proto"
 	"github.com/pentops/sqrlx.go/sqrlx"
+	"google.golang.org/protobuf/proto"
 )
 
 type OutboxMessage interface {
@@ -64,4 +65,29 @@ func (ss *NamedSender) Send(ctx context.Context, tx sqrlx.Transaction, msg Outbo
 		Values(id, destination, headers.Encode(), msgBytes))
 
 	return err
+}
+
+type DBPublisher struct {
+	db sqrlx.Transactor
+}
+
+func NewDBPublisher(conn sqrlx.Connection) (*DBPublisher, error) {
+	db, err := sqrlx.New(conn, sq.Dollar)
+	if err != nil {
+		return nil, err
+	}
+
+	return &DBPublisher{
+		db: db,
+	}, nil
+}
+
+func (p *DBPublisher) Publish(ctx context.Context, msg OutboxMessage) error {
+	return p.db.Transact(ctx, &sqrlx.TxOptions{
+		ReadOnly:  false,
+		Retryable: true,
+		Isolation: sql.LevelReadCommitted,
+	}, func(ctx context.Context, tx sqrlx.Transaction) error {
+		return Send(ctx, tx, msg)
+	})
 }
