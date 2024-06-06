@@ -82,12 +82,17 @@ func NewDBPublisher(conn sqrlx.Connection) (*DBPublisher, error) {
 	}, nil
 }
 
-func (p *DBPublisher) Publish(ctx context.Context, msg OutboxMessage) error {
+func (p *DBPublisher) Publish(ctx context.Context, msgs ...OutboxMessage) error {
 	return p.db.Transact(ctx, &sqrlx.TxOptions{
 		ReadOnly:  false,
 		Retryable: true,
 		Isolation: sql.LevelReadCommitted,
 	}, func(ctx context.Context, tx sqrlx.Transaction) error {
-		return Send(ctx, tx, msg)
+		for _, msg := range msgs {
+			if err := Send(ctx, tx, msg); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }
