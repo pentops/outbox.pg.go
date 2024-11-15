@@ -14,7 +14,7 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-type TB interface {
+type tb interface {
 	Fatal(args ...any)
 	Fatalf(format string, args ...any)
 	Helper()
@@ -31,7 +31,7 @@ type OutboxAsserter struct {
 	ServiceNameHeader string
 }
 
-func NewOutboxAsserter(t TB, conn sqrlx.Connection) *OutboxAsserter {
+func NewOutboxAsserter(t tb, conn sqrlx.Connection) *OutboxAsserter {
 	db, err := sqrlx.New(conn, sq.Dollar)
 	if err != nil {
 		t.Fatal(err.Error())
